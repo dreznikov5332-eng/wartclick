@@ -21,8 +21,8 @@ import net.minecraft.util.math.BlockPos;
 import org.lwjgl.glfw.GLFW;
 
 public class WartClickClient implements ClientModInitializer {
-    private static final int GLOBAL_COOLDOWN = 4;
-    private static final int SAME_POS_COOLDOWN = 10;
+    private static final int GLOBAL_COOLDOWN = 0;
+    private static final int SAME_POS_COOLDOWN = 2;
 
     private static KeyBinding toggleKey;
 
