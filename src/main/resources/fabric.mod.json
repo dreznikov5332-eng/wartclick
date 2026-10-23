@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "id": "wartclick",
+  "version": "${version}",
+  "name": "WartClick",
+  "description": "Автоматический ПКМ мотыгой по созревшему адскому наросту под прицелом.",
+  "authors": [],
+  "license": "MIT",
+  "environment": "client",
+  "entrypoints": {
+    "client": [
+      "com.wartclick.WartClickClient"
+    ]
+  },
+  "depends": {
+    "fabricloader": ">=0.18.0",
+    "minecraft": "~1.21.11",
+    "java": ">=21",
+    "fabric-api": "*"
+  }
+}
