@@ -26,7 +26,7 @@ import java.util.Map;
 
 public class WartClickClient implements ClientModInitializer {
     /** Сколько блоков вокруг игрока сканировать. */
-    private static final int SCAN_RADIUS = 5;
+    private static final int SCAN_RADIUS = 3;
     /** Максимум кликов за один тик. */
     private static final int MAX_CLICKS_PER_TICK = 10;
     /** Через сколько тиков можно снова кликнуть по тому же блоку. */
