@@ -33,8 +33,8 @@ public class WartClickClient implements ClientModInitializer {
     /** Сколько блоков проверять в каждую сторону (влево и вправо). */
     private static final int SIDE = 2;
     /** Сколько блоков проверять вверх и вниз. */
-    private static final int VERT = 2;
-    /** Максимум кликов за один тик. */
+    private static final int VERT_UP = 4;
+    private static final int VERT_DOWN = 1;
     private static final int MAX_CLICKS_PER_TICK = 10;
     /** Через сколько тиков можно снова кликнуть по тому же блоку. */
     private static final int SAME_POS_COOLDOWN = 3;
@@ -88,7 +88,7 @@ public class WartClickClient implements ClientModInitializer {
         int rx = right.getOffsetX(), rz = right.getOffsetZ();
 
         Vec3d eye = player.getEyePos();
-        double reach = player.getBlockInteractionRange() - 0.3;
+        double reach = player.getBlockInteractionRange();
         double reachSq = reach * reach;
         BlockPos center = player.getBlockPos();
         int clicks = 0;
@@ -96,7 +96,7 @@ public class WartClickClient implements ClientModInitializer {
         scan:
         for (int f = FORWARD; f >= -BACK; f--) {
             for (int s = -SIDE; s <= SIDE; s++) {
-                for (int dy = -VERT; dy <= VERT; dy++) {
+                for (int dy = -VERT_DOWN; dy <= VERT_UP; dy++) {
                     if (clicks >= MAX_CLICKS_PER_TICK) break scan;
 
                     BlockPos pos = center.add(fx * f + rx * s, dy, fz * f + rz * s);
