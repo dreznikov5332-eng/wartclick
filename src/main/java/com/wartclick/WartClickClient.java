@@ -30,18 +30,29 @@ import java.util.Map;
 import java.util.Set;
 
 public class WartClickClient implements ClientModInitializer {
+    /** Сколько блоков проверять вперёд по ходу движения. */
     private static final int FORWARD = 4;
+    /** Сколько блоков проверять назад. */
     private static final int BACK = 0;
+    /** Сколько блоков проверять в каждую сторону (влево и вправо). */
     private static final int SIDE = 2;
+    /** Сколько блоков проверять вверх. */
     private static final int VERT_UP = 5;
+    /** Сколько блоков проверять вниз. */
     private static final int VERT_DOWN = 1;
+    /** Максимум кликов за один тик. */
     private static final int MAX_CLICKS_PER_TICK = 10;
+    /** Через сколько тиков можно снова кликнуть по тому же блоку. */
     private static final int SAME_POS_COOLDOWN = 3;
+    /** Не бить по блокам, закрытым стеной (true) или бить всё в радиусе (false). */
     private static final boolean REQUIRE_LINE_OF_SIGHT = true;
     /** Показывать над хотбаром статистику за последнюю секунду. */
     private static final boolean DEBUG = true;
 
-    private static final double[] GRID = {0.5, 0.15, 0.85};
+    /** Точки внутри блока, которые проверяются на видимость (сначала центр, потом края). */
+    private static final double[] GRID = {0.5, 0.05, 0.95};
+    /** Допуск: если луч упёрся в блок совсем рядом с целью (задевает край), блок считается видимым. */
+    private static final double GRAZE = 0.4;
 
     private static KeyBinding toggleKey;
 
@@ -165,6 +176,7 @@ public class WartClickClient implements ClientModInitializer {
         }
     }
 
+    /** Квадрат расстояния от глаз до ближайшей точки блока. */
     private static double distToBlockSq(Vec3d eye, BlockPos pos) {
         double dx = Math.max(Math.max(pos.getX() - eye.x, 0), eye.x - (pos.getX() + 1));
         double dy = Math.max(Math.max(pos.getY() - eye.y, 0), eye.y - (pos.getY() + 1));
@@ -172,6 +184,7 @@ public class WartClickClient implements ClientModInitializer {
         return dx * dx + dy * dy + dz * dz;
     }
 
+    /** Точка на блоке в пределах досягаемости, видимая из глаз (или задетая по краю), либо null. */
     private Vec3d findVisiblePoint(MinecraftClient client, ClientPlayerEntity player,
                                    Vec3d eye, BlockPos pos, double reachSq) {
         for (double gx : GRID) {
@@ -184,7 +197,8 @@ public class WartClickClient implements ClientModInitializer {
                             RaycastContext.ShapeType.COLLIDER,
                             RaycastContext.FluidHandling.NONE,
                             player));
-                    if (r.getType() == HitResult.Type.MISS) {
+                    if (r.getType() == HitResult.Type.MISS
+                            || r.getPos().squaredDistanceTo(target) < GRAZE * GRAZE) {
                         return target;
                     }
                 }
@@ -193,6 +207,7 @@ public class WartClickClient implements ClientModInitializer {
         return null;
     }
 
+    /** Направление движения по скорости вагонетки; если стоим, остаётся прежнее. */
     private void updateForward(ClientPlayerEntity player) {
         Entity source = player.hasVehicle() ? player.getVehicle() : player;
         Vec3d v = source.getVelocity();
