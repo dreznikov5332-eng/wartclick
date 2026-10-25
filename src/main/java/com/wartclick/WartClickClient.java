@@ -272,7 +272,7 @@ public class WartClickClient implements ClientModInitializer {
             walkLastDist = -1;
             stuckCount = 0;
 
-            Vec3d pos = cart.getPos();
+            Vec3d pos = new Vec3d(cart.getX(), cart.getY(), cart.getZ());
             double speed = 0;
             if (lastCartPos != null) {
                 double dx = pos.x - lastCartPos.x;
