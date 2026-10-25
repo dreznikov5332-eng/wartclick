@@ -35,7 +35,7 @@ public class WartClickClient implements ClientModInitializer {
     /** Сколько блоков проверять в каждую сторону (влево и вправо). */
     private static final int SIDE = 2;
     /** Сколько блоков проверять вверх. */
-    private static final int VERT_UP = 4;
+    private static final int VERT_UP = 5;
     /** Сколько блоков проверять вниз. */
     private static final int VERT_DOWN = 1;
     /** Максимум кликов за один тик. */
@@ -45,14 +45,8 @@ public class WartClickClient implements ClientModInitializer {
     /** Не бить по блокам, закрытым стеной (true) или бить всё в радиусе (false). */
     private static final boolean REQUIRE_LINE_OF_SIGHT = true;
 
-    private static final double[][] SAMPLES = {
-            {0.5, 0.5, 0.5},
-            {0.5, 0.9, 0.5},
-            {0.1, 0.5, 0.5},
-            {0.9, 0.5, 0.5},
-            {0.5, 0.5, 0.1},
-            {0.5, 0.5, 0.9}
-    };
+    /** Координаты точек внутри блока, которые проверяются на видимость (сначала центр). */
+    private static final double[] GRID = {0.5, 0.15, 0.85};
 
     private static KeyBinding toggleKey;
 
@@ -111,22 +105,22 @@ public class WartClickClient implements ClientModInitializer {
         scan:
         for (int f = FORWARD; f >= -BACK; f--) {
             for (int s = -SIDE; s <= SIDE; s++) {
-                for (int dy = -VERT_DOWN; dy <= VERT_UP; dy++) {
+                for (int dy = VERT_UP; dy >= -VERT_DOWN; dy--) {
                     if (clicks >= MAX_CLICKS_PER_TICK) break scan;
 
                     BlockPos pos = center.add(fx * f + rx * s, dy, fz * f + rz * s);
                     BlockState state = client.world.getBlockState(pos);
                     if (!state.isOf(Blocks.NETHER_WART)) continue;
                     if (state.get(NetherWartBlock.AGE) < 3) continue;
-                    if (eye.squaredDistanceTo(Vec3d.ofCenter(pos)) > reachSq) continue;
+                    if (distToBlockSq(eye, pos) > reachSq) continue;
                     if (recent.containsKey(pos)) continue;
 
                     Vec3d hitVec = REQUIRE_LINE_OF_SIGHT
-                            ? findVisiblePoint(client, player, eye, pos)
+                            ? findVisiblePoint(client, player, eye, pos, reachSq)
                             : Vec3d.ofCenter(pos);
                     if (hitVec == null) continue;
 
-                    Vec3d toEye = eye.subtract(Vec3d.ofCenter(pos));
+                    Vec3d toEye = eye.subtract(hitVec);
                     Direction face = Direction.getFacing(toEye.x, toEye.y, toEye.z);
                     BlockHitResult hit = new BlockHitResult(hitVec, face, pos, false);
                     ActionResult result = client.interactionManager.interactBlock(player, Hand.MAIN_HAND, hit);
@@ -140,17 +134,31 @@ public class WartClickClient implements ClientModInitializer {
         }
     }
 
-    /** Возвращает точку на блоке, видимую из глаз без твёрдых блоков на пути, или null. */
-    private Vec3d findVisiblePoint(MinecraftClient client, ClientPlayerEntity player, Vec3d eye, BlockPos pos) {
-        for (double[] s : SAMPLES) {
-            Vec3d target = new Vec3d(pos.getX() + s[0], pos.getY() + s[1], pos.getZ() + s[2]);
-            HitResult r = client.world.raycast(new RaycastContext(
-                    eye, target,
-                    RaycastContext.ShapeType.COLLIDER,
-                    RaycastContext.FluidHandling.NONE,
-                    player));
-            if (r.getType() == HitResult.Type.MISS) {
-                return target;
+    /** Квадрат расстояния от глаз до ближайшей точки блока. */
+    private static double distToBlockSq(Vec3d eye, BlockPos pos) {
+        double dx = Math.max(Math.max(pos.getX() - eye.x, 0), eye.x - (pos.getX() + 1));
+        double dy = Math.max(Math.max(pos.getY() - eye.y, 0), eye.y - (pos.getY() + 1));
+        double dz = Math.max(Math.max(pos.getZ() - eye.z, 0), eye.z - (pos.getZ() + 1));
+        return dx * dx + dy * dy + dz * dz;
+    }
+
+    /** Точка на блоке в пределах досягаемости, видимая из глаз без твёрдых блоков на пути, или null. */
+    private Vec3d findVisiblePoint(MinecraftClient client, ClientPlayerEntity player,
+                                   Vec3d eye, BlockPos pos, double reachSq) {
+        for (double gx : GRID) {
+            for (double gy : GRID) {
+                for (double gz : GRID) {
+                    Vec3d target = new Vec3d(pos.getX() + gx, pos.getY() + gy, pos.getZ() + gz);
+                    if (eye.squaredDistanceTo(target) > reachSq) continue;
+                    HitResult r = client.world.raycast(new RaycastContext(
+                            eye, target,
+                            RaycastContext.ShapeType.COLLIDER,
+                            RaycastContext.FluidHandling.NONE,
+                            player));
+                    if (r.getType() == HitResult.Type.MISS) {
+                        return target;
+                    }
+                }
             }
         }
         return null;
