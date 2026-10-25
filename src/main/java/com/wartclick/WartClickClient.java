@@ -10,8 +10,11 @@ import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.option.KeyBinding;
 import net.minecraft.client.network.ClientPlayerEntity;
 import net.minecraft.client.util.InputUtil;
+import net.minecraft.client.world.ClientWorld;
 import net.minecraft.entity.Entity;
+import net.minecraft.entity.vehicle.AbstractMinecartEntity;
 import net.minecraft.item.ItemStack;
+import net.minecraft.registry.tag.FluidTags;
 import net.minecraft.registry.tag.ItemTags;
 import net.minecraft.text.Text;
 import net.minecraft.util.ActionResult;
@@ -20,6 +23,7 @@ import net.minecraft.util.hit.BlockHitResult;
 import net.minecraft.util.hit.HitResult;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Direction;
+import net.minecraft.util.math.MathHelper;
 import net.minecraft.util.math.Vec3d;
 import net.minecraft.world.RaycastContext;
 import org.lwjgl.glfw.GLFW;
@@ -30,32 +34,58 @@ import java.util.Map;
 import java.util.Set;
 
 public class WartClickClient implements ClientModInitializer {
-    /** Сколько блоков проверять вперёд по ходу движения. */
+    // ---------- Сбор нароста ----------
     private static final int FORWARD = 4;
-    /** Сколько блоков проверять назад. */
     private static final int BACK = 0;
-    /** Сколько блоков проверять в каждую сторону (влево и вправо). */
     private static final int SIDE = 2;
-    /** Сколько блоков проверять вверх. */
     private static final int VERT_UP = 5;
-    /** Сколько блоков проверять вниз. */
     private static final int VERT_DOWN = 1;
     /** Максимум кликов за один тик. */
-    private static final int MAX_CLICKS_PER_TICK = 10;
-    /** Через сколько тиков можно снова кликнуть по тому же блоку. */
+    private static final int MAX_CLICKS_PER_TICK = 6;
     private static final int SAME_POS_COOLDOWN = 3;
-    /** Не бить по блокам, закрытым стеной (true) или бить всё в радиусе (false). */
     private static final boolean REQUIRE_LINE_OF_SIGHT = true;
-    /** Показывать над хотбаром статистику за последнюю секунду. */
     private static final boolean DEBUG = true;
-
-    /** Точки внутри блока, которые проверяются на видимость (сначала центр, потом края). */
     private static final double[] GRID = {0.5, 0.05, 0.95};
-    /** Допуск: если луч упёрся в блок совсем рядом с целью (задевает край), блок считается видимым. */
+    /** Допуск видимости: чем больше, тем больше блоков за краем яруса берётся. */
     private static final double GRAZE = 1.6;
 
-    private static KeyBinding toggleKey;
+    // ---------- Автопилот вагонетки ----------
+    /** Какой клавишей разгонять вагонетку: true = D (вправо), false = A (влево). */
+    private static final boolean PUSH_RIGHT = true;
+    /** Радиус, в котором мод садится в вагонетку (блоков). */
+    private static final double MOUNT_RANGE = 2.8;
+    /** Пауза между попытками сесть (тиков). */
+    private static final int MOUNT_RETRY_TICKS = 10;
+    /** Если скорость ниже этого (блоков за тик) дольше STALL_TICKS, начинаем разгонять. */
+    private static final double STALL_SPEED = 0.05;
+    private static final int STALL_TICKS = 10;
+    /** Разгоняем клавишей, пока скорость не дойдёт до этого значения (0.4 = максимум обычной вагонетки). */
+    private static final double TARGET_SPEED = 0.3;
+    /** После нажатия Shift не садиться обратно столько тиков. */
+    private static final int SNEAK_SUPPRESS_TICKS = 60;
 
+    // ---------- Поход к вагонетке ----------
+    /** Включить самостоятельный поход к далёкой вагонетке. */
+    private static final boolean WALK_TO_CART = true;
+    /** Как далеко искать вагонетку (блоков). */
+    private static final double SEARCH_RANGE = 96.0;
+    /** Максимальный поворот камеры за тик (градусов). */
+    private static final float MAX_TURN = 30.0F;
+    /** Наклон камеры при ходьбе (градусов, 0 = горизонт). */
+    private static final float WALK_PITCH = 10.0F;
+    /** Проверка «застряли ли» раз в столько тиков. */
+    private static final int STUCK_CHECK_TICKS = 40;
+    /** Минимальное приближение за этот период (блоков), иначе считаем, что застряли. */
+    private static final double STUCK_MIN_PROGRESS = 1.0;
+    /** Сколько проверок подряд без прогресса, чтобы сдаться. */
+    private static final int MAX_STUCK = 3;
+    /** Сколько тиков ждать после отказа (опасность или застряли). */
+    private static final int GIVE_UP_TICKS = 200;
+
+    private static KeyBinding toggleKey;
+    private static KeyBinding autoRideKey;
+
+    // сбор
     private boolean enabled = false;
     private int tickCounter = 0;
     private Direction forwardDir = null;
@@ -68,12 +98,37 @@ public class WartClickClient implements ClientModInitializer {
     private boolean dbgNoHoe = false;
     private int dbgAllWart = 0;
 
+    // автопилот
+    private boolean autoRide = false;
+    private int autoTick = 0;
+    private int lastMountTry = -1000;
+    private int suppressUntil = 0;
+    private Vec3d lastCartPos = null;
+    private int stallTicks = 0;
+    private boolean pushing = false;
+    private boolean pressedByUs = false;
+
+    // поход
+    private boolean walkKeysDown = false;
+    private Float savedYaw = null;
+    private Float savedPitch = null;
+    private double walkLastDist = -1;
+    private int walkCheckTick = 0;
+    private int stuckCount = 0;
+    private int walkPauseUntil = 0;
+
     @Override
     public void onInitializeClient() {
         toggleKey = KeyBindingHelper.registerKeyBinding(new KeyBinding(
                 "key.wartclick.toggle",
                 InputUtil.Type.KEYSYM,
                 GLFW.GLFW_KEY_B,
+                KeyBinding.Category.MISC
+        ));
+        autoRideKey = KeyBindingHelper.registerKeyBinding(new KeyBinding(
+                "key.wartclick.autoride",
+                InputUtil.Type.KEYSYM,
+                GLFW.GLFW_KEY_N,
                 KeyBinding.Category.MISC
         ));
 
@@ -91,6 +146,18 @@ public class WartClickClient implements ClientModInitializer {
                 player.sendMessage(Text.literal("WartClick: " + (enabled ? "ВКЛ" : "ВЫКЛ")), true);
             }
         }
+        while (autoRideKey.wasPressed()) {
+            autoRide = !autoRide;
+            if (!autoRide) {
+                releasePush(client);
+                releaseWalk(client);
+            }
+            if (player != null) {
+                player.sendMessage(Text.literal("Автопилот вагонетки: " + (autoRide ? "ВКЛ" : "ВЫКЛ")), true);
+            }
+        }
+
+        autoRideTick(client);
 
         if (!enabled) return;
         if (player == null || client.world == null || client.interactionManager == null) return;
@@ -176,7 +243,197 @@ public class WartClickClient implements ClientModInitializer {
         }
     }
 
-    /** Квадрат расстояния от глаз до ближайшей точки блока. */
+    // ================= Автопилот вагонетки =================
+
+    private void autoRideTick(MinecraftClient client) {
+        ClientPlayerEntity player = client.player;
+        if (!autoRide || player == null || client.world == null
+                || client.interactionManager == null || client.currentScreen != null) {
+            releasePush(client);
+            releaseWalk(client);
+            return;
+        }
+
+        autoTick++;
+        if (player.isSneaking()) {
+            suppressUntil = autoTick + SNEAK_SUPPRESS_TICKS;
+        }
+
+        Entity vehicle = player.getVehicle();
+        if (vehicle instanceof AbstractMinecartEntity cart) {
+            // Сели: останавливаем ходьбу и возвращаем камеру, какой она была.
+            releaseWalk(client);
+            if (savedYaw != null) {
+                player.setYaw(savedYaw);
+                player.setPitch(savedPitch);
+                savedYaw = null;
+                savedPitch = null;
+            }
+            walkLastDist = -1;
+            stuckCount = 0;
+
+            Vec3d pos = cart.getPos();
+            double speed = 0;
+            if (lastCartPos != null) {
+                double dx = pos.x - lastCartPos.x;
+                double dz = pos.z - lastCartPos.z;
+                speed = Math.sqrt(dx * dx + dz * dz);
+            }
+            lastCartPos = pos;
+
+            if (speed < STALL_SPEED) stallTicks++; else stallTicks = 0;
+            if (!pushing && stallTicks >= STALL_TICKS) pushing = true;
+            if (pushing && speed >= TARGET_SPEED) pushing = false;
+
+            if (pushing) pushOn(client); else releasePush(client);
+            return;
+        }
+
+        // Не в вагонетке: сбрасываем состояние.
+        lastCartPos = null;
+        stallTicks = 0;
+        pushing = false;
+        releasePush(client);
+
+        if (autoTick < suppressUntil) {
+            releaseWalk(client);
+            return;
+        }
+
+        // Ищем ближайшую вагонетку.
+        AbstractMinecartEntity best = null;
+        double bestD = Double.MAX_VALUE;
+        for (AbstractMinecartEntity c : client.world.getEntitiesByClass(
+                AbstractMinecartEntity.class,
+                player.getBoundingBox().expand(SEARCH_RANGE),
+                e -> true)) {
+            double d = player.squaredDistanceTo(c);
+            if (d < bestD) {
+                bestD = d;
+                best = c;
+            }
+        }
+        if (best == null) {
+            releaseWalk(client);
+            return;
+        }
+
+        if (bestD <= MOUNT_RANGE * MOUNT_RANGE) {
+            releaseWalk(client);
+            if (autoTick - lastMountTry >= MOUNT_RETRY_TICKS) {
+                lastMountTry = autoTick;
+                client.interactionManager.interactEntity(player, best, Hand.MAIN_HAND);
+            }
+        } else if (WALK_TO_CART) {
+            walkToward(client, player, best);
+        }
+    }
+
+    private void walkToward(MinecraftClient client, ClientPlayerEntity player, AbstractMinecartEntity cart) {
+        if (autoTick < walkPauseUntil) {
+            releaseWalk(client);
+            return;
+        }
+
+        if (savedYaw == null) {
+            savedYaw = player.getYaw();
+            savedPitch = player.getPitch();
+            walkLastDist = -1;
+            walkCheckTick = autoTick;
+            stuckCount = 0;
+        }
+
+        double dx = cart.getX() - player.getX();
+        double dz = cart.getZ() - player.getZ();
+        double dist = Math.sqrt(dx * dx + dz * dz);
+
+        // Плавный поворот к вагонетке.
+        float targetYaw = (float) (MathHelper.atan2(dz, dx) * 57.29577951308232) - 90.0F;
+        float diff = MathHelper.wrapDegrees(targetYaw - player.getYaw());
+        float step = MathHelper.clamp(diff, -MAX_TURN, MAX_TURN);
+        player.setYaw(player.getYaw() + step);
+        player.setPitch(WALK_PITCH);
+
+        // Обрыв или лава впереди: стоп.
+        if (isDangerAhead(client, player)) {
+            giveUp(client, player, "Автопилот: впереди обрыв или лава, остановился");
+            return;
+        }
+
+        // Застряли: не приближаемся.
+        if (autoTick - walkCheckTick >= STUCK_CHECK_TICKS) {
+            if (walkLastDist >= 0 && walkLastDist - dist < STUCK_MIN_PROGRESS) {
+                stuckCount++;
+            } else {
+                stuckCount = 0;
+            }
+            walkLastDist = dist;
+            walkCheckTick = autoTick;
+            if (stuckCount >= MAX_STUCK) {
+                giveUp(client, player, "Автопилот: не могу дойти до вагонетки");
+                return;
+            }
+        } else if (walkLastDist < 0) {
+            walkLastDist = dist;
+        }
+
+        client.options.forwardKey.setPressed(true);
+        client.options.sprintKey.setPressed(true);
+        client.options.jumpKey.setPressed(player.horizontalCollision);
+        walkKeysDown = true;
+    }
+
+    private void giveUp(MinecraftClient client, ClientPlayerEntity player, String message) {
+        releaseWalk(client);
+        walkPauseUntil = autoTick + GIVE_UP_TICKS;
+        walkLastDist = -1;
+        stuckCount = 0;
+        player.sendMessage(Text.literal(message), true);
+    }
+
+    /** Впереди нет пола в пределах 3 блоков или есть лава. */
+    private boolean isDangerAhead(MinecraftClient client, ClientPlayerEntity player) {
+        ClientWorld w = client.world;
+        Vec3d look = Vec3d.fromPolar(0.0F, player.getYaw());
+        BlockPos ahead = BlockPos.ofFloored(
+                player.getX() + look.x * 1.5,
+                player.getY(),
+                player.getZ() + look.z * 1.5);
+
+        boolean floor = false;
+        for (int dy = 0; dy >= -3; dy--) {
+            BlockPos p = ahead.add(0, dy, 0);
+            if (w.getFluidState(p).isIn(FluidTags.LAVA)) return true;
+            if (dy < 0 && !w.getBlockState(p).getCollisionShape(w, p).isEmpty()) {
+                floor = true;
+            }
+        }
+        return !floor;
+    }
+
+    private void releaseWalk(MinecraftClient client) {
+        if (!walkKeysDown) return;
+        client.options.forwardKey.setPressed(false);
+        client.options.sprintKey.setPressed(false);
+        client.options.jumpKey.setPressed(false);
+        walkKeysDown = false;
+    }
+
+    private void pushOn(MinecraftClient client) {
+        KeyBinding k = PUSH_RIGHT ? client.options.rightKey : client.options.leftKey;
+        k.setPressed(true);
+        pressedByUs = true;
+    }
+
+    private void releasePush(MinecraftClient client) {
+        if (!pressedByUs) return;
+        KeyBinding k = PUSH_RIGHT ? client.options.rightKey : client.options.leftKey;
+        k.setPressed(false);
+        pressedByUs = false;
+    }
+
+    // ================= Сбор нароста: вспомогательные методы =================
+
     private static double distToBlockSq(Vec3d eye, BlockPos pos) {
         double dx = Math.max(Math.max(pos.getX() - eye.x, 0), eye.x - (pos.getX() + 1));
         double dy = Math.max(Math.max(pos.getY() - eye.y, 0), eye.y - (pos.getY() + 1));
@@ -184,7 +441,6 @@ public class WartClickClient implements ClientModInitializer {
         return dx * dx + dy * dy + dz * dz;
     }
 
-    /** Точка на блоке в пределах досягаемости, видимая из глаз (или задетая по краю), либо null. */
     private Vec3d findVisiblePoint(MinecraftClient client, ClientPlayerEntity player,
                                    Vec3d eye, BlockPos pos, double reachSq) {
         for (double gx : GRID) {
@@ -207,7 +463,6 @@ public class WartClickClient implements ClientModInitializer {
         return null;
     }
 
-    /** Направление движения по скорости вагонетки; если стоим, остаётся прежнее. */
     private void updateForward(ClientPlayerEntity player) {
         Entity source = player.hasVehicle() ? player.getVehicle() : player;
         Vec3d v = source.getVelocity();
