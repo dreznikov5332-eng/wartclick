@@ -17,9 +17,11 @@ import net.minecraft.text.Text;
 import net.minecraft.util.ActionResult;
 import net.minecraft.util.Hand;
 import net.minecraft.util.hit.BlockHitResult;
+import net.minecraft.util.hit.HitResult;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Direction;
 import net.minecraft.util.math.Vec3d;
+import net.minecraft.world.RaycastContext;
 import org.lwjgl.glfw.GLFW;
 
 import java.util.HashMap;
@@ -32,12 +34,25 @@ public class WartClickClient implements ClientModInitializer {
     private static final int BACK = 0;
     /** Сколько блоков проверять в каждую сторону (влево и вправо). */
     private static final int SIDE = 2;
-    /** Сколько блоков проверять вверх и вниз. */
+    /** Сколько блоков проверять вверх. */
     private static final int VERT_UP = 4;
+    /** Сколько блоков проверять вниз. */
     private static final int VERT_DOWN = 1;
+    /** Максимум кликов за один тик. */
     private static final int MAX_CLICKS_PER_TICK = 10;
     /** Через сколько тиков можно снова кликнуть по тому же блоку. */
     private static final int SAME_POS_COOLDOWN = 3;
+    /** Не бить по блокам, закрытым стеной (true) или бить всё в радиусе (false). */
+    private static final boolean REQUIRE_LINE_OF_SIGHT = true;
+
+    private static final double[][] SAMPLES = {
+            {0.5, 0.5, 0.5},
+            {0.5, 0.9, 0.5},
+            {0.1, 0.5, 0.5},
+            {0.9, 0.5, 0.5},
+            {0.5, 0.5, 0.1},
+            {0.5, 0.5, 0.9}
+    };
 
     private static KeyBinding toggleKey;
 
@@ -106,7 +121,14 @@ public class WartClickClient implements ClientModInitializer {
                     if (eye.squaredDistanceTo(Vec3d.ofCenter(pos)) > reachSq) continue;
                     if (recent.containsKey(pos)) continue;
 
-                    BlockHitResult hit = new BlockHitResult(Vec3d.ofCenter(pos), Direction.UP, pos, false);
+                    Vec3d hitVec = REQUIRE_LINE_OF_SIGHT
+                            ? findVisiblePoint(client, player, eye, pos)
+                            : Vec3d.ofCenter(pos);
+                    if (hitVec == null) continue;
+
+                    Vec3d toEye = eye.subtract(Vec3d.ofCenter(pos));
+                    Direction face = Direction.getFacing(toEye.x, toEye.y, toEye.z);
+                    BlockHitResult hit = new BlockHitResult(hitVec, face, pos, false);
                     ActionResult result = client.interactionManager.interactBlock(player, Hand.MAIN_HAND, hit);
                     if (result.isAccepted()) {
                         player.swingHand(Hand.MAIN_HAND);
@@ -116,6 +138,22 @@ public class WartClickClient implements ClientModInitializer {
                 }
             }
         }
+    }
+
+    /** Возвращает точку на блоке, видимую из глаз без твёрдых блоков на пути, или null. */
+    private Vec3d findVisiblePoint(MinecraftClient client, ClientPlayerEntity player, Vec3d eye, BlockPos pos) {
+        for (double[] s : SAMPLES) {
+            Vec3d target = new Vec3d(pos.getX() + s[0], pos.getY() + s[1], pos.getZ() + s[2]);
+            HitResult r = client.world.raycast(new RaycastContext(
+                    eye, target,
+                    RaycastContext.ShapeType.COLLIDER,
+                    RaycastContext.FluidHandling.NONE,
+                    player));
+            if (r.getType() == HitResult.Type.MISS) {
+                return target;
+            }
+        }
+        return null;
     }
 
     /** Направление движения по скорости вагонетки; если стоим, остаётся прежнее. */
