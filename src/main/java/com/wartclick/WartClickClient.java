@@ -52,7 +52,7 @@ public class WartClickClient implements ClientModInitializer {
     /** Точки внутри блока, которые проверяются на видимость (сначала центр, потом края). */
     private static final double[] GRID = {0.5, 0.05, 0.95};
     /** Допуск: если луч упёрся в блок совсем рядом с целью (задевает край), блок считается видимым. */
-    private static final double GRAZE = 0.4;
+    private static final double GRAZE = 0.9;
 
     private static KeyBinding toggleKey;
 
