@@ -25,27 +25,22 @@ import net.minecraft.world.RaycastContext;
 import org.lwjgl.glfw.GLFW;
 
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Map;
+import java.util.Set;
 
 public class WartClickClient implements ClientModInitializer {
-    /** Сколько блоков проверять вперёд по ходу движения. */
     private static final int FORWARD = 4;
-    /** Сколько блоков проверять назад. */
     private static final int BACK = 0;
-    /** Сколько блоков проверять в каждую сторону (влево и вправо). */
     private static final int SIDE = 2;
-    /** Сколько блоков проверять вверх. */
     private static final int VERT_UP = 5;
-    /** Сколько блоков проверять вниз. */
     private static final int VERT_DOWN = 1;
-    /** Максимум кликов за один тик. */
     private static final int MAX_CLICKS_PER_TICK = 10;
-    /** Через сколько тиков можно снова кликнуть по тому же блоку. */
     private static final int SAME_POS_COOLDOWN = 3;
-    /** Не бить по блокам, закрытым стеной (true) или бить всё в радиусе (false). */
     private static final boolean REQUIRE_LINE_OF_SIGHT = true;
+    /** Показывать над хотбаром статистику за последнюю секунду. */
+    private static final boolean DEBUG = true;
 
-    /** Координаты точек внутри блока, которые проверяются на видимость (сначала центр). */
     private static final double[] GRID = {0.5, 0.15, 0.85};
 
     private static KeyBinding toggleKey;
@@ -54,6 +49,13 @@ public class WartClickClient implements ClientModInitializer {
     private int tickCounter = 0;
     private Direction forwardDir = null;
     private final Map<BlockPos, Integer> recent = new HashMap<>();
+
+    private final Set<BlockPos> dbgSeen = new HashSet<>();
+    private final Set<BlockPos> dbgFar = new HashSet<>();
+    private final Set<BlockPos> dbgBlocked = new HashSet<>();
+    private final Set<BlockPos> dbgClicked = new HashSet<>();
+    private boolean dbgNoHoe = false;
+    private int dbgAllWart = 0;
 
     @Override
     public void onInitializeClient() {
@@ -86,8 +88,28 @@ public class WartClickClient implements ClientModInitializer {
         tickCounter++;
         recent.entrySet().removeIf(e -> tickCounter - e.getValue() > SAME_POS_COOLDOWN);
 
+        if (DEBUG && tickCounter % 20 == 0) {
+            String msg = dbgNoHoe
+                    ? "WartClick: в руке НЕ мотыга"
+                    : "WartClick | в зоне нароста: " + dbgAllWart
+                    + " | зрелых: " + dbgSeen.size()
+                    + " | далеко: " + dbgFar.size()
+                    + " | закрыто: " + dbgBlocked.size()
+                    + " | клик: " + dbgClicked.size();
+            player.sendMessage(Text.literal(msg), true);
+            dbgSeen.clear();
+            dbgFar.clear();
+            dbgBlocked.clear();
+            dbgClicked.clear();
+            dbgAllWart = 0;
+            dbgNoHoe = false;
+        }
+
         ItemStack held = player.getMainHandStack();
-        if (!held.isIn(ItemTags.HOES)) return;
+        if (!held.isIn(ItemTags.HOES)) {
+            dbgNoHoe = true;
+            return;
+        }
 
         updateForward(player);
 
@@ -111,14 +133,22 @@ public class WartClickClient implements ClientModInitializer {
                     BlockPos pos = center.add(fx * f + rx * s, dy, fz * f + rz * s);
                     BlockState state = client.world.getBlockState(pos);
                     if (!state.isOf(Blocks.NETHER_WART)) continue;
+                    dbgAllWart++;
                     if (state.get(NetherWartBlock.AGE) < 3) continue;
-                    if (distToBlockSq(eye, pos) > reachSq) continue;
+                    dbgSeen.add(pos);
+                    if (distToBlockSq(eye, pos) > reachSq) {
+                        dbgFar.add(pos);
+                        continue;
+                    }
                     if (recent.containsKey(pos)) continue;
 
                     Vec3d hitVec = REQUIRE_LINE_OF_SIGHT
                             ? findVisiblePoint(client, player, eye, pos, reachSq)
                             : Vec3d.ofCenter(pos);
-                    if (hitVec == null) continue;
+                    if (hitVec == null) {
+                        dbgBlocked.add(pos);
+                        continue;
+                    }
 
                     Vec3d toEye = eye.subtract(hitVec);
                     Direction face = Direction.getFacing(toEye.x, toEye.y, toEye.z);
@@ -128,13 +158,13 @@ public class WartClickClient implements ClientModInitializer {
                         player.swingHand(Hand.MAIN_HAND);
                     }
                     recent.put(pos, tickCounter);
+                    dbgClicked.add(pos);
                     clicks++;
                 }
             }
         }
     }
 
-    /** Квадрат расстояния от глаз до ближайшей точки блока. */
     private static double distToBlockSq(Vec3d eye, BlockPos pos) {
         double dx = Math.max(Math.max(pos.getX() - eye.x, 0), eye.x - (pos.getX() + 1));
         double dy = Math.max(Math.max(pos.getY() - eye.y, 0), eye.y - (pos.getY() + 1));
@@ -142,7 +172,6 @@ public class WartClickClient implements ClientModInitializer {
         return dx * dx + dy * dy + dz * dz;
     }
 
-    /** Точка на блоке в пределах досягаемости, видимая из глаз без твёрдых блоков на пути, или null. */
     private Vec3d findVisiblePoint(MinecraftClient client, ClientPlayerEntity player,
                                    Vec3d eye, BlockPos pos, double reachSq) {
         for (double gx : GRID) {
@@ -164,7 +193,6 @@ public class WartClickClient implements ClientModInitializer {
         return null;
     }
 
-    /** Направление движения по скорости вагонетки; если стоим, остаётся прежнее. */
     private void updateForward(ClientPlayerEntity player) {
         Entity source = player.hasVehicle() ? player.getVehicle() : player;
         Vec3d v = source.getVelocity();
