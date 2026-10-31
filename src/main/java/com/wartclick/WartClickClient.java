@@ -43,10 +43,15 @@ public class WartClickClient implements ClientModInitializer {
     /** Кликать только с мотыгой в руке (false = кликать с любым предметом). */
     private static final boolean REQUIRE_HOE = true;
 
+    /** Сколько блоков проверять вперёд по ходу движения. */
     private static final int FORWARD = 4;
-    private static final int BACK = 0;
-    private static final int SIDE = 2;
+    /** Сколько блоков проверять назад. */
+    private static final int BACK = 2;
+    /** Сколько блоков проверять в каждую сторону (влево и вправо). */
+    private static final int SIDE = 3;
+    /** Сколько блоков проверять вверх. */
     private static final int VERT_UP = 5;
+    /** Сколько блоков проверять вниз. */
     private static final int VERT_DOWN = 1;
     /** Максимум кликов за один тик. */
     private static final int MAX_CLICKS_PER_TICK = 6;
