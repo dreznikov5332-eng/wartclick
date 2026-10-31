@@ -16,6 +16,7 @@ import net.minecraft.entity.vehicle.AbstractMinecartEntity;
 import net.minecraft.item.ItemStack;
 import net.minecraft.registry.tag.FluidTags;
 import net.minecraft.registry.tag.ItemTags;
+import net.minecraft.state.property.Properties;
 import net.minecraft.text.Text;
 import net.minecraft.util.ActionResult;
 import net.minecraft.util.Hand;
@@ -34,7 +35,14 @@ import java.util.Map;
 import java.util.Set;
 
 public class WartClickClient implements ClientModInitializer {
-    // ---------- Сбор нароста ----------
+    // ---------- Сбор урожая ----------
+    /** Собирать адский нарост (стадия 3 из 3). */
+    private static final boolean HARVEST_WART = true;
+    /** Собирать морковь (стадия 7 из 7). */
+    private static final boolean HARVEST_CARROTS = true;
+    /** Кликать только с мотыгой в руке (false = кликать с любым предметом). */
+    private static final boolean REQUIRE_HOE = true;
+
     private static final int FORWARD = 4;
     private static final int BACK = 0;
     private static final int SIDE = 2;
@@ -50,8 +58,12 @@ public class WartClickClient implements ClientModInitializer {
     private static final double GRAZE = 1.6;
 
     // ---------- Автопилот вагонетки ----------
+    /** Разгонять ли вагонетку клавишей A/D, когда она стоит. Пока false: мод только садится. */
+    private static final boolean AUTO_PUSH = false;
     /** Какой клавишей разгонять вагонетку: true = D (вправо), false = A (влево). */
     private static final boolean PUSH_RIGHT = true;
+    /** Показывать над хотбаром, видит ли мод вагонетку. */
+    private static final boolean AUTO_DEBUG = true;
     /** Радиус, в котором мод садится в вагонетку (блоков). */
     private static final double MOUNT_RANGE = 2.8;
     /** Пауза между попытками сесть (тиков). */
@@ -96,7 +108,7 @@ public class WartClickClient implements ClientModInitializer {
     private final Set<BlockPos> dbgBlocked = new HashSet<>();
     private final Set<BlockPos> dbgClicked = new HashSet<>();
     private boolean dbgNoHoe = false;
-    private int dbgAllWart = 0;
+    private int dbgAllCrops = 0;
 
     // автопилот
     private boolean autoRide = false;
@@ -169,7 +181,7 @@ public class WartClickClient implements ClientModInitializer {
         if (DEBUG && tickCounter % 20 == 0) {
             String msg = dbgNoHoe
                     ? "WartClick: в руке НЕ мотыга"
-                    : "WartClick | в зоне нароста: " + dbgAllWart
+                    : "WartClick | в зоне культур: " + dbgAllCrops
                     + " | зрелых: " + dbgSeen.size()
                     + " | далеко: " + dbgFar.size()
                     + " | закрыто: " + dbgBlocked.size()
@@ -179,12 +191,12 @@ public class WartClickClient implements ClientModInitializer {
             dbgFar.clear();
             dbgBlocked.clear();
             dbgClicked.clear();
-            dbgAllWart = 0;
+            dbgAllCrops = 0;
             dbgNoHoe = false;
         }
 
         ItemStack held = player.getMainHandStack();
-        if (!held.isIn(ItemTags.HOES)) {
+        if (REQUIRE_HOE && !held.isIn(ItemTags.HOES)) {
             dbgNoHoe = true;
             return;
         }
@@ -210,9 +222,9 @@ public class WartClickClient implements ClientModInitializer {
 
                     BlockPos pos = center.add(fx * f + rx * s, dy, fz * f + rz * s);
                     BlockState state = client.world.getBlockState(pos);
-                    if (!state.isOf(Blocks.NETHER_WART)) continue;
-                    dbgAllWart++;
-                    if (state.get(NetherWartBlock.AGE) < 3) continue;
+                    if (!isCrop(state)) continue;
+                    dbgAllCrops++;
+                    if (!isRipe(state)) continue;
                     dbgSeen.add(pos);
                     if (distToBlockSq(eye, pos) > reachSq) {
                         dbgFar.add(pos);
@@ -241,6 +253,23 @@ public class WartClickClient implements ClientModInitializer {
                 }
             }
         }
+    }
+
+    // ================= Какие культуры собираем =================
+
+    private static boolean isCrop(BlockState state) {
+        return (HARVEST_WART && state.isOf(Blocks.NETHER_WART))
+                || (HARVEST_CARROTS && state.isOf(Blocks.CARROTS));
+    }
+
+    private static boolean isRipe(BlockState state) {
+        if (state.isOf(Blocks.NETHER_WART)) {
+            return state.get(NetherWartBlock.AGE) >= 3;
+        }
+        if (state.isOf(Blocks.CARROTS)) {
+            return state.get(Properties.AGE_7) >= 7;
+        }
+        return false;
     }
 
     // ================= Автопилот вагонетки =================
@@ -285,7 +314,7 @@ public class WartClickClient implements ClientModInitializer {
             if (!pushing && stallTicks >= STALL_TICKS) pushing = true;
             if (pushing && speed >= TARGET_SPEED) pushing = false;
 
-            if (pushing) pushOn(client); else releasePush(client);
+            if (pushing && AUTO_PUSH) pushOn(client); else releasePush(client);
             return;
         }
 
@@ -313,6 +342,13 @@ public class WartClickClient implements ClientModInitializer {
                 best = c;
             }
         }
+
+        if (AUTO_DEBUG && autoTick % 20 == 10) {
+            player.sendMessage(Text.literal(best == null
+                    ? "Автопилот: вагонеток не видно"
+                    : "Автопилот: вагонетка в " + String.format("%.1f", Math.sqrt(bestD)) + " блоках"), true);
+        }
+
         if (best == null) {
             releaseWalk(client);
             return;
@@ -320,6 +356,20 @@ public class WartClickClient implements ClientModInitializer {
 
         if (bestD <= MOUNT_RANGE * MOUNT_RANGE) {
             releaseWalk(client);
+
+            // Смотрим на вагонетку и кликаем, как это делает игрок.
+            if (savedYaw == null) {
+                savedYaw = player.getYaw();
+                savedPitch = player.getPitch();
+            }
+            Vec3d eye = player.getEyePos();
+            double dx = best.getX() - eye.x;
+            double dy = (best.getY() + 0.4) - eye.y;
+            double dz = best.getZ() - eye.z;
+            double h = Math.sqrt(dx * dx + dz * dz);
+            player.setYaw((float) (MathHelper.atan2(dz, dx) * 57.29577951308232) - 90.0F);
+            player.setPitch((float) (-(MathHelper.atan2(dy, h) * 57.29577951308232)));
+
             if (autoTick - lastMountTry >= MOUNT_RETRY_TICKS) {
                 lastMountTry = autoTick;
                 client.interactionManager.interactEntity(player, best, Hand.MAIN_HAND);
@@ -432,7 +482,7 @@ public class WartClickClient implements ClientModInitializer {
         pressedByUs = false;
     }
 
-    // ================= Сбор нароста: вспомогательные методы =================
+    // ================= Сбор урожая: вспомогательные методы =================
 
     private static double distToBlockSq(Vec3d eye, BlockPos pos) {
         double dx = Math.max(Math.max(pos.getX() - eye.x, 0), eye.x - (pos.getX() + 1));
