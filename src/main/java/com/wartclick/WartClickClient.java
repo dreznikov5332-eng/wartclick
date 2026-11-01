@@ -607,3 +607,5 @@ public class WartClickClient implements ClientModInitializer {
         } else if (forwardDir == null) {
             forwardDir = player.getHorizontalFacing();
         }
+    }
+}
