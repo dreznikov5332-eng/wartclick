@@ -29,8 +29,10 @@ import net.minecraft.util.math.Vec3d;
 import net.minecraft.world.RaycastContext;
 import org.lwjgl.glfw.GLFW;
 
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
@@ -43,6 +45,14 @@ public class WartClickClient implements ClientModInitializer {
     /** Кликать только с мотыгой в руке (false = кликать с любым предметом). */
     private static final boolean REQUIRE_HOE = true;
 
+    // ---------- Наведение камеры ----------
+    /** Наводить камеру на культуру перед кликом (false = максимум скорости, без камеры). */
+    private static final boolean AIM_AT_CROPS = true;
+    /** Максимальный поворот камеры за один тик (градусов). 180 = всегда успевает за один тик. */
+    private static final float MAX_AIM_TURN = 180.0F;
+    /** Кликаем по всем культурам, которые от центра прицела не дальше этого угла (градусов). */
+    private static final double CLICK_TOLERANCE = 25.0;
+
     /** Сколько блоков проверять вперёд по ходу движения. */
     private static final int FORWARD = 4;
     /** Сколько блоков проверять назад. */
@@ -54,8 +64,9 @@ public class WartClickClient implements ClientModInitializer {
     /** Сколько блоков проверять вниз. */
     private static final int VERT_DOWN = 1;
     /** Максимум кликов за один тик. */
-    private static final int MAX_CLICKS_PER_TICK = 6;
-    private static final int SAME_POS_COOLDOWN = 3;
+    private static final int MAX_CLICKS_PER_TICK = 16;
+    /** Через сколько тиков можно снова кликнуть по той же культуре. */
+    private static final int SAME_POS_COOLDOWN = 2;
     private static final boolean REQUIRE_LINE_OF_SIGHT = true;
     private static final boolean DEBUG = true;
     private static final double[] GRID = {0.5, 0.05, 0.95};
@@ -86,7 +97,7 @@ public class WartClickClient implements ClientModInitializer {
     private static final boolean WALK_TO_CART = true;
     /** Как далеко искать вагонетку (блоков). */
     private static final double SEARCH_RANGE = 96.0;
-    /** Максимальный поворот камеры за тик (градусов). */
+    /** Максимальный поворот камеры за тик при ходьбе (градусов). */
     private static final float MAX_TURN = 30.0F;
     /** Наклон камеры при ходьбе (градусов, 0 = горизонт). */
     private static final float WALK_PITCH = 10.0F;
@@ -101,6 +112,17 @@ public class WartClickClient implements ClientModInitializer {
 
     private static KeyBinding toggleKey;
     private static KeyBinding autoRideKey;
+
+    private static class Candidate {
+        final BlockPos pos;
+        final Vec3d hit;
+        double err;
+
+        Candidate(BlockPos pos, Vec3d hit) {
+            this.pos = pos;
+            this.hit = hit;
+        }
+    }
 
     // сбор
     private boolean enabled = false;
@@ -217,13 +239,14 @@ public class WartClickClient implements ClientModInitializer {
         double reach = player.getBlockInteractionRange();
         double reachSq = reach * reach;
         BlockPos center = player.getBlockPos();
-        int clicks = 0;
 
+        // 1. Собираем всех кандидатов: зрелые, в досягаемости, видимые.
+        List<Candidate> cands = new ArrayList<>();
         scan:
         for (int f = FORWARD; f >= -BACK; f--) {
             for (int s = -SIDE; s <= SIDE; s++) {
                 for (int dy = VERT_UP; dy >= -VERT_DOWN; dy--) {
-                    if (clicks >= MAX_CLICKS_PER_TICK) break scan;
+                    if (cands.size() >= 64) break scan;
 
                     BlockPos pos = center.add(fx * f + rx * s, dy, fz * f + rz * s);
                     BlockState state = client.world.getBlockState(pos);
@@ -244,20 +267,76 @@ public class WartClickClient implements ClientModInitializer {
                         dbgBlocked.add(pos);
                         continue;
                     }
-
-                    Vec3d toEye = eye.subtract(hitVec);
-                    Direction face = Direction.getFacing(toEye.x, toEye.y, toEye.z);
-                    BlockHitResult hit = new BlockHitResult(hitVec, face, pos, false);
-                    ActionResult result = client.interactionManager.interactBlock(player, Hand.MAIN_HAND, hit);
-                    if (result.isAccepted()) {
-                        player.swingHand(Hand.MAIN_HAND);
-                    }
-                    recent.put(pos, tickCounter);
-                    dbgClicked.add(pos);
-                    clicks++;
+                    cands.add(new Candidate(pos, hitVec));
                 }
             }
         }
+        if (cands.isEmpty()) return;
+
+        // 2. Наводим камеру на ближайшую к прицелу культуру.
+        if (AIM_AT_CROPS) {
+            float curYaw = player.getYaw();
+            float curPitch = player.getPitch();
+            Candidate target = null;
+            double bestErr = Double.MAX_VALUE;
+            for (Candidate c : cands) {
+                c.err = angularError(eye, c.hit, curYaw, curPitch);
+                if (c.err < bestErr) {
+                    bestErr = c.err;
+                    target = c;
+                }
+            }
+            if (bestErr > CLICK_TOLERANCE) {
+                float dyaw = MathHelper.wrapDegrees(yawTo(eye, target.hit) - curYaw);
+                float dpitch = pitchTo(eye, target.hit) - curPitch;
+                float len = (float) Math.sqrt(dyaw * dyaw + dpitch * dpitch);
+                if (len > MAX_AIM_TURN) {
+                    float k = MAX_AIM_TURN / len;
+                    dyaw *= k;
+                    dpitch *= k;
+                }
+                player.setYaw(curYaw + dyaw);
+                player.setPitch(MathHelper.clamp(curPitch + dpitch, -90.0F, 90.0F));
+            }
+        }
+
+        // 3. Кликаем по тем, что сейчас под прицелом.
+        float ny = player.getYaw();
+        float np = player.getPitch();
+        int clicks = 0;
+        for (Candidate c : cands) {
+            if (clicks >= MAX_CLICKS_PER_TICK) break;
+            if (AIM_AT_CROPS && angularError(eye, c.hit, ny, np) > CLICK_TOLERANCE) continue;
+
+            Vec3d toEye = eye.subtract(c.hit);
+            Direction face = Direction.getFacing(toEye.x, toEye.y, toEye.z);
+            BlockHitResult hit = new BlockHitResult(c.hit, face, c.pos, false);
+            ActionResult result = client.interactionManager.interactBlock(player, Hand.MAIN_HAND, hit);
+            if (result.isAccepted()) {
+                player.swingHand(Hand.MAIN_HAND);
+            }
+            recent.put(c.pos, tickCounter);
+            dbgClicked.add(c.pos);
+            clicks++;
+        }
+    }
+
+    // ================= Углы =================
+
+    private static float yawTo(Vec3d eye, Vec3d p) {
+        return (float) (MathHelper.atan2(p.z - eye.z, p.x - eye.x) * 57.29577951308232) - 90.0F;
+    }
+
+    private static float pitchTo(Vec3d eye, Vec3d p) {
+        double dx = p.x - eye.x;
+        double dz = p.z - eye.z;
+        return (float) (-(MathHelper.atan2(p.y - eye.y, Math.sqrt(dx * dx + dz * dz)) * 57.29577951308232));
+    }
+
+    private static double angularError(Vec3d eye, Vec3d p, float yaw, float pitch) {
+        float dyaw = MathHelper.wrapDegrees(yawTo(eye, p) - yaw);
+        float dpitch = pitchTo(eye, p) - pitch;
+        return Math.sqrt(dyaw * dyaw + dpitch * dpitch);
     }
 
     // ================= Какие культуры собираем =================
@@ -528,5 +607,3 @@ public class WartClickClient implements ClientModInitializer {
         } else if (forwardDir == null) {
             forwardDir = player.getHorizontalFacing();
         }
-    }
-}
